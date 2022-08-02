@@ -30,6 +30,8 @@ import { getSingletonDependencies } from './dependencySingletons'
 import { RediError } from './error'
 import { Quantity, LookUp } from './types'
 import { should } from 'vitest'
+import { createHookListener } from './devtools'
+import { InjectorListener } from './injectorListener'
 
 const MAX_RESOLUTIONS_QUEUED = 300
 
@@ -66,6 +68,8 @@ export class Injector {
     private readonly parent: Injector | null
     private readonly children: Injector[] = []
 
+    private readonly devListener: InjectorListener;
+
     private resolutionOngoing = 0
 
     private disposed = false
@@ -82,6 +86,10 @@ export class Injector {
         }
 
         this.resolvedDependencyCollection = new ResolvedDependencyCollection()
+
+        this.devListener = createHookListener();
+
+        this.devListener.injectorCreated(this)
     }
 
     public createChild(dependencies?: Dependency[]): Injector {
@@ -96,6 +104,7 @@ export class Injector {
         this.deleteThisFromParent()
 
         this.disposed = true
+        this.devListener.injectorDisposed(this)
     }
 
     public add<T>(ctor: Ctor<T>): void
@@ -118,11 +127,14 @@ export class Injector {
                 isFactoryDependencyItem(item)
             ) {
                 this.dependencyCollection.add(dependency, item as DependencyItem<T>)
+                this.devListener.dependencyAdded(dependency, item as DependencyItem<T>);
             } else {
                 this.resolvedDependencyCollection.add(dependency, item as T)
+                this.devListener.dependencyAdded(dependency, item as T);
             }
         } else {
             this.dependencyCollection.add(dependency as Ctor<T>)
+            this.devListener.dependencyAdded(dependency, null);
         }
     }
 
@@ -132,6 +144,7 @@ export class Injector {
     public delete<T>(id: DependencyIdentifier<T>): void {
         this.dependencyCollection.delete(id)
         this.resolvedDependencyCollection.delete(id)
+        this.devListener.dependencyRemoved(id);
     }
 
     /**
@@ -245,7 +258,11 @@ export class Injector {
         let thing: T
 
         if (item.lazy) {
-            const idle = new IdleValue<T>(() => this.resolveClass_(ctor))
+            const idle = new IdleValue<T>(() => {
+                const result = this.resolveClass_(ctor)
+                this.devListener.lazyDependencyInitialized(id || ctor)
+                return result
+            })
             thing = new Proxy(Object.create(null), {
                 get(target: any, key: string | number | symbol): any {
                     if (key in target) {
@@ -269,7 +286,7 @@ export class Injector {
                     return prop
                 },
                 set(_target: any, key: string | number | symbol, value: any): boolean {
-                    ;(idle.getValue() as any)[key] = value
+                    ; (idle.getValue() as any)[key] = value
                     return true
                 },
             })
@@ -376,6 +393,8 @@ export class Injector {
                 ret = thing
             }
 
+            this.devListener.asyncDependencyReady(id);
+
             this.resolvedDependencyCollection.add(id, ret)
 
             return ret
@@ -439,6 +458,8 @@ export class Injector {
             } else if (registrations) {
                 ret = this.resolveDependency(id, registrations, shouldCache)
             }
+
+            this.devListener.dependencyFetched(id);
 
             return ret
         }
