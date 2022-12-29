@@ -27,3 +27,5 @@ export {
     ValueDependencyItem,
 } from './dependencyItem'
 export { RediError } from './error'
+
+export * as debug from './debugApi'

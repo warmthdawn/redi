@@ -76,6 +76,14 @@ export class DependencyCollection implements Disposable {
         this.normalizeDependencies(dependencies).forEach((pair) => this.add(pair[0], pair[1]))
     }
 
+    public keys(): DependencyIdentifier<any>[] {
+        return Array.from(this.dependencyMap.keys());
+    }
+
+    public size(): number {
+        return this.dependencyMap.size;
+    }
+
     public dispose(): void {
         this.dependencyMap.clear()
     }
@@ -150,6 +158,14 @@ export class ResolvedDependencyCollection implements Disposable {
         } else {
             return ret[0]
         }
+    }
+
+    public keys(): DependencyIdentifier<any>[] {
+        return Array.from(this.resolvedDependencies.keys());
+    }
+
+    public size(): number {
+        return this.resolvedDependencies.size;
     }
 
     public dispose(): void {

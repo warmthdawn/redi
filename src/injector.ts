@@ -29,7 +29,6 @@ import { IdleValue } from './idleValue'
 import { getSingletonDependencies } from './dependencySingletons'
 import { RediError } from './error'
 import { Quantity, LookUp } from './types'
-import { should } from 'vitest'
 import { createHookListener } from './devtools'
 import { InjectorListener } from './injectorListener'
 
@@ -61,6 +60,36 @@ class GetAsyncItemFromSyncApiError<T> extends RediError {
     }
 }
 
+/**
+ * Injector 的额外选项
+ */
+export interface InjectorOptions {
+    /**
+     * 是否在 devtools 中隐藏此 Injector
+     */
+    hideInDevtools?: boolean,
+    /**
+     * 是否使用全局的单例依赖
+     */
+    useSingletonDependencies?: boolean,
+    /**
+     * Injector 的名字
+     */
+    name?: string
+}
+
+export interface InjectorDebuggerData {
+    parent: Injector | null,
+    children: Injector[],
+    dependencyCollection: DependencyCollection,
+    resolvedDependencyCollection: ResolvedDependencyCollection,
+    /**
+     * 直接使用 injector.add 添加的非标准 valueDependency
+     */
+    unstandardValueDependencies: Set<DependencyIdentifier<any>>,
+    [extras: string]: any,
+}
+
 export class Injector {
     private readonly dependencyCollection: DependencyCollection
     private readonly resolvedDependencyCollection = new ResolvedDependencyCollection()
@@ -68,29 +97,60 @@ export class Injector {
     private readonly parent: Injector | null
     private readonly children: Injector[] = []
 
-    private readonly devListener: InjectorListener;
+    private readonly devListener?: InjectorListener;
 
     private resolutionOngoing = 0
 
     private disposed = false
 
-    constructor(collectionOrDependencies?: Dependency[], parent?: Injector) {
+    private name = ''
+
+    /**
+     * 供调试器使用的额外数据
+     */
+    public readonly _debuggerData: InjectorDebuggerData | null = null;
+
+    constructor(collectionOrDependencies?: Dependency[], options?: InjectorOptions)
+    constructor(collectionOrDependencies?: Dependency[], parent?: Injector, options?: InjectorOptions)
+    constructor(collectionOrDependencies?: Dependency[], parentOrOptions?: Injector | InjectorOptions, options?: InjectorOptions) {
         this.dependencyCollection = new DependencyCollection(collectionOrDependencies || [])
 
-        if (!parent) {
-            this.parent = null
-            this.dependencyCollection.append(getSingletonDependencies())
+
+        let resolvedOptions: Required<InjectorOptions> | null = null;
+
+        if (parentOrOptions instanceof Injector) {
+            this.parent = parentOrOptions
+            this.parent.children.push(this)
+            resolvedOptions = this.resolveOptions(options)
         } else {
-            this.parent = parent
-            parent.children.push(this)
+            this.parent = null
+            resolvedOptions = this.resolveOptions(parentOrOptions)
+            resolvedOptions.useSingletonDependencies = true;
+        }
+
+        if (resolvedOptions.useSingletonDependencies) {
+            this.dependencyCollection.append(getSingletonDependencies())
         }
 
         this.resolvedDependencyCollection = new ResolvedDependencyCollection()
 
-        this.devListener = createHookListener();
 
-        this.devListener.injectorCreated(this)
+        this.name = resolvedOptions.name;
+
+        if (!resolvedOptions.hideInDevtools) {
+            this._debuggerData = {
+                parent: this.parent,
+                children: this.children,
+                dependencyCollection: this.dependencyCollection,
+                resolvedDependencyCollection: this.resolvedDependencyCollection,
+                unstandardValueDependencies: new Set(),
+            }
+            this.devListener = createHookListener(this);
+        }
+
+        this.devListener?.injectorCreated()
     }
+
 
     public createChild(dependencies?: Dependency[]): Injector {
         this.ensureInjectorNotDisposed()
@@ -104,7 +164,7 @@ export class Injector {
         this.deleteThisFromParent()
 
         this.disposed = true
-        this.devListener.injectorDisposed(this)
+        this.devListener?.injectorDisposed()
     }
 
     public add<T>(ctor: Ctor<T>): void
@@ -127,14 +187,15 @@ export class Injector {
                 isFactoryDependencyItem(item)
             ) {
                 this.dependencyCollection.add(dependency, item as DependencyItem<T>)
-                this.devListener.dependencyAdded(dependency, item as DependencyItem<T>);
+                this.devListener?.dependencyAdded(dependency, item as DependencyItem<T>);
             } else {
                 this.resolvedDependencyCollection.add(dependency, item as T)
-                this.devListener.dependencyAdded(dependency, item as T);
+                this._debuggerData?.unstandardValueDependencies.add(dependency);
+                this.devListener?.dependencyAdded(dependency, item as T);
             }
         } else {
             this.dependencyCollection.add(dependency as Ctor<T>)
-            this.devListener.dependencyAdded(dependency, null);
+            this.devListener?.dependencyAdded(dependency, null);
         }
     }
 
@@ -144,7 +205,7 @@ export class Injector {
     public delete<T>(id: DependencyIdentifier<T>): void {
         this.dependencyCollection.delete(id)
         this.resolvedDependencyCollection.delete(id)
-        this.devListener.dependencyRemoved(id);
+        this.devListener?.dependencyRemoved(id);
     }
 
     /**
@@ -260,7 +321,7 @@ export class Injector {
         if (item.lazy) {
             const idle = new IdleValue<T>(() => {
                 const result = this.resolveClass_(ctor)
-                this.devListener.lazyDependencyInitialized(id || ctor)
+                this.devListener?.lazyDependencyInitialized(id || ctor)
                 return result
             })
             thing = new Proxy(Object.create(null), {
@@ -341,6 +402,10 @@ export class Injector {
         return thing
     }
 
+    public getName(): string {
+        return this.name;
+    }
+
     private resolveFactory<T>(id: DependencyIdentifier<T>, item: FactoryDependencyItem<T>, shouldCache: boolean): T {
         this.markNewResolution(id)
 
@@ -378,6 +443,7 @@ export class Injector {
             if (resolvedCheck !== NotInstantiatedSymbol) {
                 return resolvedCheck as T
             }
+            this.devListener?.asyncDependencyResolved(id, item, thing);
 
             let ret: T
             if (Array.isArray(thing)) {
@@ -392,8 +458,6 @@ export class Injector {
             } else {
                 ret = thing
             }
-
-            this.devListener.asyncDependencyReady(id);
 
             this.resolvedDependencyCollection.add(id, ret)
 
@@ -459,7 +523,7 @@ export class Injector {
                 ret = this.resolveDependency(id, registrations, shouldCache)
             }
 
-            this.devListener.dependencyFetched(id);
+            this.devListener?.dependencyFetched(id);
 
             return ret
         }
@@ -515,4 +579,16 @@ export class Injector {
             this.parent.children.splice(index, 1)
         }
     }
+
+    private resolveOptions(possibleOptions: InjectorOptions | undefined): Required<InjectorOptions> {
+        const result = {
+            hideInDevtools: possibleOptions?.hideInDevtools ?? false,
+            useSingletonDependencies: possibleOptions?.useSingletonDependencies ?? false,
+            name: possibleOptions?.name ?? '<<unknown>>',
+        };
+        return result;
+    }
+
+
+
 }

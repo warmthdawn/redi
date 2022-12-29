@@ -1,20 +1,26 @@
 import { Injector } from "./injector"
 import { InjectorListener } from "./injectorListener"
+import { InnerMethods, innerMethods } from "./innerMethods"
 
 
 export interface DevHooks {
     enabled?: boolean
     emit: (event: string, ...payload: any[]) => void
-    on: (event: string, handler: Function) => void
-    once: (event: string, handler: Function) => void
-    off: (event: string, handler: Function) => void
-    rootInjectors: Injector[]
+    on: (event: string, handler: (...payload: any) => void) => void
+    once: (event: string, handler: (...payload: any) => void) => void
+    off: (event: string, handler: (...payload: any) => void) => void
+    rootInjectors: Map<number, Injector>,
+    innterMethods?: InnerMethods,
 }
 
 const enum DevHookEvents {
     InjectorCreated = 'injector:created',
     InjectorDisposed = 'injector:disposed',
-
+    DependencyAdded = 'dependency:added',
+    DependencyRemoved = 'dependency:removed',
+    DependencyFetched = 'dependency:fetched',
+    LazyDependencyInitialized = 'dependency:lazy-init', 
+    AsyncDependencyReady = 'dependency:async-ready', 
 }
 
 
@@ -41,6 +47,13 @@ function _injectDevHooks(target: any) {
                 devHooks?.emit(event, ...payload)
             });
             pendingMessages = [];
+
+            // 如果依赖了不同版本的 redi，会因为 symbol 不一样 innterMethod 不能通用
+            if (typeof hooks.innterMethods !== "undefined") {
+                console.error("[redi-dev] you are using redi from different paths")
+            } else {
+                hooks.innterMethods = innerMethods;
+            }
         }
     }
 
@@ -88,7 +101,7 @@ function _emit(event: string, ...payload: any[]) {
 /**
  * 确保 devTools 已经初始化
  */
-export function ensureInit() {
+export function ensureInit(): void {
     if (!devToolsInjected) {
         if (typeof window !== 'undefined') {
             _injectDevHooks(window);
@@ -97,31 +110,35 @@ export function ensureInit() {
     }
 }
 
-export function createHookListener(): InjectorListener {
+export function createHookListener(injector: Injector): InjectorListener {
     return {
-        injectorCreated(injector) {
+        injectorCreated() {
             ensureInit();
             _emit(DevHookEvents.InjectorCreated, injector);
         },
-        injectorDisposed(injector) {
+        injectorDisposed() {
             ensureInit();
             _emit(DevHookEvents.InjectorDisposed, injector);
         },
         dependencyAdded(identifier, item) {
-            
+            ensureInit();
+            _emit(DevHookEvents.DependencyAdded, injector, identifier, item);
         },
         dependencyFetched(identifier) {
-            
+            ensureInit();
+            _emit(DevHookEvents.DependencyFetched, injector, identifier);
         },
         dependencyRemoved(identifier) {
-            
+            ensureInit();
+            _emit(DevHookEvents.DependencyRemoved, injector, identifier);
         },
         lazyDependencyInitialized(identifier) {
-            
+            ensureInit();
+            _emit(DevHookEvents.LazyDependencyInitialized, injector, identifier);
         },
-        asyncDependencyReady(identifier) {
-            
+        asyncDependencyResolved(identifier, item, thing) {
+            ensureInit();
+            _emit(DevHookEvents.AsyncDependencyReady, injector, identifier, item, thing);
         },
     }
 }
-
